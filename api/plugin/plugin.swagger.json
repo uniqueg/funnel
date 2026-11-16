@@ -78,6 +78,60 @@
       },
       "description": "AmazonS3Storage describes the configuration for the Amazon S3 storage backend."
     },
+    "configAuthz": {
+      "type": "object",
+      "properties": {
+        "RequiredClaim": {
+          "$ref": "#/definitions/configAuthzRequiredClaim"
+        },
+        "DecisionService": {
+          "$ref": "#/definitions/configAuthzDecisionService"
+        }
+      },
+      "description": "Authz configures the claim rule and the AuthZEN decision service that\nguard the TES task API (profile tes-authzen/1). Both are off when unset."
+    },
+    "configAuthzDecisionService": {
+      "type": "object",
+      "properties": {
+        "URL": {
+          "type": "string"
+        },
+        "Timeout": {
+          "type": "string"
+        },
+        "Claims": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "CredentialFile": {
+          "type": "string"
+        }
+      },
+      "description": "AuthzDecisionService is an OpenID AuthZEN 1.0 Access Evaluation endpoint.\nWhen URL is set, it decides instead of TaskAccess."
+    },
+    "configAuthzRequiredClaim": {
+      "type": "object",
+      "properties": {
+        "Name": {
+          "type": "string"
+        },
+        "Values": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "Prefixes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "description": "AuthzRequiredClaim admits a caller if the claim Name (exact top-level name\nfirst, else a dotted path) has a value in Values or starting with one of\nPrefixes."
+    },
     "configBadger": {
       "type": "object",
       "properties": {
@@ -704,9 +758,25 @@
           "items": {
             "type": "string"
           }
+        },
+        "Timeout": {
+          "type": "string",
+          "description": "Bounds discovery, JWKS and userinfo calls (default 10s)."
+        },
+        "Userinfo": {
+          "$ref": "#/definitions/configOidcUserinfo"
         }
       },
       "description": "OidcAuth describes OpenID Connect authentication configuration."
+    },
+    "configOidcUserinfo": {
+      "type": "object",
+      "properties": {
+        "Enabled": {
+          "type": "boolean"
+        }
+      },
+      "description": "OidcUserinfo configures the userinfo lookup: claims that userinfo returns\njoin the token's claims for Server.Authz (the token's value wins)."
     },
     "configPlugins": {
       "type": "object",
@@ -938,6 +1008,9 @@
         "MaxResponseBytes": {
           "type": "integer",
           "format": "int64"
+        },
+        "Authz": {
+          "$ref": "#/definitions/configAuthz"
         }
       },
       "description": "Server describes configuration for the server."

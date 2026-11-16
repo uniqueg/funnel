@@ -82,6 +82,15 @@ message OidcAuth {
   string RequireScope = 5;
   string RequireAudience = 6;
   repeated string Admins = 7;
+  // Bounds discovery, JWKS and userinfo calls (default 10s).
+  google.protobuf.Duration Timeout = 8;
+  OidcUserinfo Userinfo = 9;
+}
+
+// OidcUserinfo configures the userinfo lookup: claims that userinfo returns
+// join the token's claims for Server.Authz (the token's value wins).
+message OidcUserinfo {
+  bool Enabled = 1;
 }
 
 message TimeoutConfig {
@@ -110,6 +119,32 @@ message Server {
   bool DisableHTTPCache = 7;
   string TaskAccess = 8;
   uint32 MaxResponseBytes = 9;
+  Authz Authz = 10;
+}
+
+// Authz configures the claim rule and the AuthZEN decision service that
+// guard the TES task API (profile tes-authzen/1). Both are off when unset.
+message Authz {
+  AuthzRequiredClaim RequiredClaim = 1;
+  AuthzDecisionService DecisionService = 2;
+}
+
+// AuthzRequiredClaim admits a caller if the claim Name (exact top-level name
+// first, else a dotted path) has a value in Values or starting with one of
+// Prefixes.
+message AuthzRequiredClaim {
+  string Name = 1;
+  repeated string Values = 2;
+  repeated string Prefixes = 3;
+}
+
+// AuthzDecisionService is an OpenID AuthZEN 1.0 Access Evaluation endpoint.
+// When URL is set, it decides instead of TaskAccess.
+message AuthzDecisionService {
+  string URL = 1;
+  google.protobuf.Duration Timeout = 2;
+  repeated string Claims = 3;
+  string CredentialFile = 4;
 }
 
 // Scheduler contains Funnel's basic scheduler configuration.
