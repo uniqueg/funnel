@@ -559,6 +559,22 @@ func TestAuthzRulePassesPDPDenies(t *testing.T) {
 	}
 }
 
+func TestAuthzDeniedCreateStoresNothing(t *testing.T) {
+	// Case 8: a denied CreateTask gives 403 and stores no task.
+	backends(t, func(t *testing.T, backend string) {
+		pdp := newStubPDP(t)
+		ts := newAuthzService(t, backend, withPDP(pdp, &config.AuthzDecisionService{}))
+		pdp.allow(false)
+		if _, err := ts.CreateTask(alice, simpleTask()); code(err) != codes.PermissionDenied {
+			t.Fatalf("CreateTask = %v, want PermissionDenied", err)
+		}
+		pdp.allow(true)
+		if list, err := ts.ListTasks(alice, &tes.ListTasksRequest{}); err != nil || len(list.Tasks) != 0 {
+			t.Fatalf("ListTasks = %v, %v; want no tasks", list, err)
+		}
+	})
+}
+
 func TestAuthzBuiltInDefaultKeepsTaskAccess(t *testing.T) {
 	// Case 22: without a decision service, TaskAccess decides as today.
 	for _, tt := range []struct {
@@ -632,6 +648,8 @@ func TestAuthzStartupChecks(t *testing.T) {
 		{"URL not http", pdpAt(&config.AuthzDecisionService{URL: "ftp://pdp/access/v1/evaluation"}), false},
 		{"empty credential file", pdpAt(&config.AuthzDecisionService{URL: "https://pdp/e", CredentialFile: empty}), false},
 		{"missing credential file", pdpAt(&config.AuthzDecisionService{URL: "https://pdp/e", CredentialFile: filepath.Join(dir, "nope")}), false},
+		{"zero timeout", pdpAt(&config.AuthzDecisionService{URL: "https://pdp/e", Timeout: durationpb.New(0)}), false},
+		{"negative timeout", pdpAt(&config.AuthzDecisionService{URL: "https://pdp/e", Timeout: durationpb.New(-time.Second)}), false},
 		{"valid", pdpAt(&config.AuthzDecisionService{URL: "https://pdp/e", CredentialFile: credential}), true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

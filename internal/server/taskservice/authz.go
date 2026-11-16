@@ -79,6 +79,9 @@ func NewAuthz(conf *config.Server, log *logger.Logger) (*Authz, error) {
 	if pdp.Timeout != nil {
 		a.timeout = pdp.Timeout.AsDuration()
 	}
+	if a.timeout <= 0 {
+		return nil, errors.New("Server.Authz.DecisionService.Timeout must be positive")
+	}
 	if pdp.CredentialFile != "" {
 		raw, err := os.ReadFile(pdp.CredentialFile)
 		if a.credential = strings.TrimSpace(string(raw)); err != nil || a.credential == "" {
@@ -90,8 +93,9 @@ func NewAuthz(conf *config.Server, log *logger.Logger) (*Authz, error) {
 }
 
 // skip reports whether the hook leaves the call alone: no hook, in-process
-// worker checks (EventWriteInterceptor), and Basic-auth administrators,
-// the service identities of workers and schedulers.
+// worker checks (EventWriteInterceptor), and Basic-auth administrators
+// (admins without token claims), the service identities of workers and
+// schedulers. They are exempt from all four actions.
 func (a *Authz) skip(ctx context.Context) bool {
 	user := identity.GetUser(ctx)
 	return a == nil || ctx.Value(InternalCallKey) != nil || user.IsAdmin && user.Claims == nil && !user.IsPublic
@@ -125,6 +129,18 @@ func lookup(user *identity.UserInfo, name string) (any, bool) {
 		}
 	}
 	return nil, false
+}
+
+// admit runs the checks before a decision: it reports whether the
+// decision service must be asked, or the claim rule's error.
+func (a *Authz) admit(ctx context.Context) (bool, error) {
+	if a.skip(ctx) {
+		return false, nil
+	}
+	if err := a.gate(ctx); err != nil {
+		return false, err
+	}
+	return a.url != "", nil
 }
 
 // gate applies the claim rule.
@@ -164,16 +180,20 @@ func (a *Authz) subject(user *identity.UserInfo) map[string]any {
 	if user.Claims != nil {
 		t = *user.Claims
 	}
-	for key, names := range map[string][]string{"iss": {"iss"}, "sub": {"sub"}, "client_id": {"azp", "client_id"}, "scope": {"scope", "scp"}} {
+	first := func(key string, names ...string) {
 		for _, name := range names {
 			if value, ok := t[name]; ok && value != nil {
-				if s, isString := value.(string); isString && key == "scope" {
-					value = strings.Fields(s)
-				}
 				properties[key] = value
-				break
+				return
 			}
 		}
+	}
+	first("iss", "iss")
+	first("sub", "sub")
+	first("client_id", "azp", "client_id")
+	first("scope", "scope", "scp")
+	if s, ok := properties["scope"].(string); ok {
+		properties["scope"] = strings.Fields(s)
 	}
 	return map[string]any{"type": "user", "id": user.Username, "properties": properties}
 }
@@ -188,33 +208,48 @@ func (a *Authz) ask(ctx context.Context, action string, resource, properties map
 		"resource": resource,
 		"context":  map[string]any{"tes": map[string]any{"profile": authzProfile, "service_id": serviceID}},
 	})
-	var answer struct{ Decision *bool }
-	cause := "request"
+	var decision *bool
 	if err == nil {
-		var request *http.Request
-		if request, err = http.NewRequestWithContext(ctx, http.MethodPost, a.url, bytes.NewReader(body)); err == nil {
-			request.Header.Set("Content-Type", "application/json")
-			request.Header.Set("X-Request-ID", requestID)
-			if a.credential != "" {
-				request.Header.Set("Authorization", "Bearer "+a.credential)
-			}
-			var response *http.Response
-			if response, err = a.client.Do(request); err == nil {
-				defer response.Body.Close() //nolint:errcheck // Read-only response cleanup cannot change the decision.
-				cause = response.Status
-				if response.StatusCode == http.StatusOK {
-					err = json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&answer)
-				}
-			}
-		}
+		decision, err = a.post(ctx, body, requestID)
 	}
-	if err != nil || answer.Decision == nil {
-		a.log.Error("decision service failed", "action", action, "resource", resource["id"], "requestID", requestID, "cause", cause, "error", err)
+	if err != nil {
+		a.log.Error("decision service failed", "action", action, "resource", resource["id"], "requestID", requestID, "error", err)
+		// Without this, the HTTP gateway's retry policy for UNAVAILABLE
+		// (server.go) repeats the call up to four times.
 		_ = grpc.SetTrailer(ctx, metadata.Pairs("grpc-retry-pushback-ms", "-1")) //nolint:errcheck // No gRPC stream in direct calls.
 		return false, errAuthzUnavailable
 	}
-	a.log.Info("decision", "decision", *answer.Decision, "action", action, "resource", resource["id"], "requestID", requestID)
-	return *answer.Decision, nil
+	a.log.Info("decision", "decision", *decision, "action", action, "resource", resource["id"], "requestID", requestID)
+	return *decision, nil
+}
+
+// post sends one evaluation and returns the boolean decision.
+func (a *Authz) post(ctx context.Context, body []byte, requestID string) (*bool, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, a.url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Request-ID", requestID)
+	if a.credential != "" {
+		request.Header.Set("Authorization", "Bearer "+a.credential)
+	}
+	response, err := a.client.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close() //nolint:errcheck // Read-only response cleanup cannot change the decision.
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("status %s", response.Status)
+	}
+	var answer struct{ Decision *bool }
+	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&answer); err != nil {
+		return nil, err
+	}
+	if answer.Decision == nil {
+		return nil, errors.New("no boolean decision")
+	}
+	return answer.Decision, nil
 }
 
 // taskResource reads a task's owner, state and tags without an owner
@@ -241,10 +276,7 @@ func taskResource(ctx context.Context, read taskpolicy.ReadOnlyServer, id string
 // authorizeTask decides GetTask and CancelTask (spec section 6) and returns
 // a context in which the backends no longer filter by owner.
 func (a *Authz) authorizeTask(ctx context.Context, read taskpolicy.ReadOnlyServer, action, id, view string) (context.Context, error) {
-	if a.skip(ctx) {
-		return ctx, nil
-	}
-	if err := a.gate(ctx); err != nil || a.url == "" {
+	if decide, err := a.admit(ctx); !decide {
 		return ctx, err
 	}
 	resource, exists, err := taskResource(ctx, read, id)
@@ -277,33 +309,31 @@ func (a *Authz) authorizeTask(ctx context.Context, read taskpolicy.ReadOnlyServe
 // authorizeList asks for the task sets "all" and "own" and returns a
 // context that lists all tasks or only the caller's.
 func (a *Authz) authorizeList(ctx context.Context, view string) (context.Context, error) {
-	if a.skip(ctx) {
-		return ctx, nil
-	}
-	if err := a.gate(ctx); err != nil || a.url == "" {
+	if decide, err := a.admit(ctx); !decide {
 		return ctx, err
 	}
-	scope := map[bool]identity.AccessMode{true: identity.AccessAll, false: identity.AccessOwner}
-	allowed := map[string]bool{}
-	for _, set := range []string{"all", "own"} {
-		ok, err := a.ask(ctx, "ListTasks", map[string]any{"type": "tes_task_set", "id": set}, map[string]any{"view": view})
-		if err != nil {
-			return ctx, err
-		}
-		allowed[set] = ok
+	askSet := func(set string) (bool, error) {
+		return a.ask(ctx, "ListTasks", map[string]any{"type": "tes_task_set", "id": set}, map[string]any{"view": view})
 	}
-	if !allowed["all"] && !allowed["own"] {
-		return ctx, errAuthzForbidden
+	all, err := askSet("all")
+	if err != nil {
+		return ctx, err
 	}
-	return identity.WithAccess(ctx, scope[allowed["all"]]), nil
+	own, err := askSet("own")
+	switch {
+	case err != nil:
+		return ctx, err
+	case all:
+		return identity.WithAccess(ctx, identity.AccessAll), nil
+	case own:
+		return identity.WithAccess(ctx, identity.AccessOwner), nil
+	}
+	return ctx, errAuthzForbidden
 }
 
 // authorizeCreate decides CreateTask on the caller's task set.
 func (a *Authz) authorizeCreate(ctx context.Context, task *tes.Task) (context.Context, error) {
-	if a.skip(ctx) {
-		return ctx, nil
-	}
-	if err := a.gate(ctx); err != nil || a.url == "" {
+	if decide, err := a.admit(ctx); !decide {
 		return ctx, err
 	}
 	resource := map[string]any{"type": "tes_task_set", "id": "own", "properties": map[string]any{"task": project(task)}}

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/calypr/funnel/api/config"
+	"github.com/calypr/funnel/internal/identity"
 )
 
 // userinfoFixture serves a JWKS and a scripted userinfo endpoint.
@@ -111,6 +112,37 @@ func TestAuthorizeAddsUserinfoClaimsAndCachesThem(t *testing.T) {
 	f.config.Authorize(token)
 	if got := f.calls.Load(); got != 4 {
 		t.Fatalf("userinfo calls = %d, want 4 after eviction", got)
+	}
+}
+
+func TestUserinfoCacheExpiry(t *testing.T) {
+	cache := newUserinfoCache(2)
+	key := [32]byte{1}
+	cache.put(key, identity.Claims{"sub": "alice"}, time.Now().Add(-time.Second))
+	if _, ok := cache.get(key); ok {
+		t.Fatal("get() returned an expired entry")
+	}
+	if cache.order.Len() != 0 || len(cache.entries) != 0 {
+		t.Fatal("expired entry was not removed")
+	}
+}
+
+func TestAuthorizeCachesUserinfoNoLongerThanTheToken(t *testing.T) {
+	// Entries live min(exp, 5 min).
+	f := newUserinfoFixture(t)
+	exp := time.Now().Add(30 * time.Second).Truncate(time.Second)
+	token := "Bearer " + signOIDCTestToken(t, f.key, map[string]any{
+		"iss": "https://issuer.example", "sub": "alice", "aud": "funnel", "exp": exp.Unix(),
+	})
+	f.config.Authorize(token)
+	f.config.Authorize(token)
+	if got := f.calls.Load(); got != 1 {
+		t.Fatalf("userinfo calls = %d, want 1 while cached", got)
+	}
+	for _, element := range f.config.userinfo.entries {
+		if expires := element.Value.(*userinfoEntry).expires; expires.After(exp.Add(time.Millisecond)) {
+			t.Fatalf("cache expiry %v is after token exp %v", expires, exp)
+		}
 	}
 }
 

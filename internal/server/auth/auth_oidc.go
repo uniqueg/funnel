@@ -82,6 +82,10 @@ func (c *OidcConfig) initConfig() {
 	if c.local.Timeout != nil {
 		c.client.Timeout = c.local.Timeout.AsDuration()
 	}
+	if c.client.Timeout <= 0 {
+		fmt.Printf("[ERROR] Configuration value [Server.OidcAuth.Timeout] must be positive.\n")
+		os.Exit(1)
+	}
 	parsedUrl := validateUrl(c.local.ServiceConfigURL)
 	err := json.Unmarshal(fetchJson(c.client, parsedUrl), &c.remote)
 	if err != nil {

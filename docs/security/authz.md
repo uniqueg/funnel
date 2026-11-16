@@ -22,8 +22,10 @@ Server:
     # GetTask, CancelTask and ListTasks instead of TaskAccess.
     DecisionService:
       URL: "https://pdp.example.org/access/v1/evaluation"
+      # Positive; default 2s.
       Timeout: 2s
-      # Token claims passed to the decision service (default: none).
+      # Claims passed to the decision service, from the token and, if
+      # enabled, userinfo (default: none).
       Claims:
         - eduperson_entitlement
       # Optional file with a bearer credential that Funnel sends to the
@@ -37,7 +39,8 @@ How it works:
   are set, both must allow. A failing rule gives 403 on every task call.
   Service clients without the claim (such as client-credentials tokens) are
   rejected by the rule; leave the rule unset and admit them in the decision
-  service instead.
+  service instead. Basic-auth users who are not administrators carry no
+  claims, so the rule rejects them too.
 - The decision service gets one evaluation per decision: the caller
   (subject ID = the task owner Funnel stores, i.e. the token `sub` or the
   Basic username, plus `iss`, `sub`, `client_id`, `scope` and the listed
@@ -51,15 +54,18 @@ How it works:
   is allowed.
 - Any failure of the decision service (timeout, connection error, non-200
   status, a body without a boolean `decision`) gives 503 and is not retried.
+  The decision service and OIDC timeouts must be positive.
 - Funnel refuses to start if `Authz` is set without `BasicAuth` or
   `OidcAuth`, if `RequiredClaim` has no `Name` or no values and prefixes, or
   contains an empty value or prefix, if `DecisionService` lacks a valid
   `http(s)` URL, or if the credential file is empty or unreadable. Plain
   `http` to a non-loopback host only logs a warning: secure the connection,
   e.g. with a service mesh.
-- Worker paths are not affected: workers' task reads with Basic admin
-  credentials, event writes, scheduler and execution-claim calls keep using
-  `TaskAccess`.
+- Basic-auth administrators bypass the rule and the decision service for all
+  four operations: they are the service identities of workers and
+  schedulers, whose task reads use these credentials. Event writes,
+  scheduler and execution-claim calls also keep using `TaskAccess`. Give
+  Basic admin credentials only to Funnel's own components.
 - The claim rule and `Claims` read the access token's claims and, with
   `Server.OidcAuth.Userinfo.Enabled`, the userinfo claims too (the token's
   value wins). See [OAuth2](oauth2.md).

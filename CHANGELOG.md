@@ -3,6 +3,12 @@
 ### Added
 
 * CLI configuration loading supports `FUNNEL_CONFIG` for the default config file path and `FUNNEL_LOG_LEVEL` to override the configured log level. Explicit flags take precedence.
+* `Server.Authz` adds a claim rule and an external OpenID AuthZEN decision service for CreateTask, GetTask, CancelTask and ListTasks (TES AuthZ profile `tes-authzen/1`). See [external authorization](docs/security/authz.md).
+* `Server.OidcAuth.Userinfo.Enabled` adds userinfo claims to the caller's identity, and `Server.OidcAuth.Timeout` bounds discovery, JWKS and userinfo calls.
+
+### Changed
+
+* OIDC discovery and JWKS fetches now time out after 10 seconds by default (`Server.OidcAuth.Timeout`); before, they had no timeout.
 
 ### Fixed
 
