@@ -13,9 +13,22 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+// workerCalls is implemented by a task service that limits event writes
+// and execution claims to its own components (the TES AuthZ hook).
+type workerCalls interface {
+	AuthorizeWorkerCall(ctx context.Context) error
+}
+
 // EventWriteInterceptor checks that event writes target accessible tasks.
+// With the TES AuthZ hook, event writes and execution claims are limited
+// to the callers the hook exempts (Basic-auth administrators).
 func EventWriteInterceptor(tasks tesrpc.TaskServiceServer) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
+		if guard, ok := tasks.(workerCalls); ok && (info.FullMethod == events.EventService_WriteEvent_FullMethodName || info.FullMethod == events.EventService_ClaimExecution_FullMethodName) {
+			if err := guard.AuthorizeWorkerCall(ctx); err != nil {
+				return nil, err
+			}
+		}
 		if info.FullMethod != events.EventService_WriteEvent_FullMethodName {
 			return handler(ctx, req)
 		}

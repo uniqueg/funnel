@@ -242,14 +242,21 @@ func (a *Authz) post(ctx context.Context, body []byte, requestID string) (*bool,
 	if response.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("status %s", response.Status)
 	}
-	var answer struct{ Decision *bool }
-	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&answer); err != nil {
+	// One JSON object with the exact key "decision" (encoding/json would
+	// match keys case-insensitively and ignore trailing data).
+	raw, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	if err != nil {
 		return nil, err
 	}
-	if answer.Decision == nil {
+	var decision *bool
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(object["decision"], &decision); err != nil || decision == nil {
 		return nil, errors.New("no boolean decision")
 	}
-	return answer.Decision, nil
+	return decision, nil
 }
 
 // taskResource reads a task's owner, state and tags without an owner
@@ -396,6 +403,10 @@ func project(task *tes.Task) map[string]any {
 // stripURL removes credentials, query and fragment from a URL with the
 // plain string algorithm of spec section 3.3; ok is false to omit it.
 func stripURL(u string) (string, bool) {
+	// Step 0: WHATWG deletes TAB, LF and CR, so "https://\t/u:p@h/p" leaks.
+	if strings.ContainsAny(u, "\t\n\r") {
+		return "", false
+	}
 	scheme := 0
 	for i, c := range u {
 		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || i > 0 && (c >= '0' && c <= '9' || strings.ContainsRune("+-.", c)) {
@@ -417,6 +428,16 @@ func stripURL(u string) (string, bool) {
 	end := strings.IndexAny(w, "?#")
 	if strings.ContainsRune(w, '\\') || end >= 0 && strings.LastIndexByte(w, '@') > end {
 		return "", false
+	}
+	// Step 2c: WHATWG skips extra slashes, so "https:///u:p@h/p" sends u:p.
+	if w == "" {
+		head := rest
+		if cut := strings.IndexAny(rest, "?#"); cut >= 0 {
+			head = rest[:cut]
+		}
+		if strings.ContainsRune(head, '@') {
+			return "", false
+		}
 	}
 	if end < 0 {
 		end = len(w)

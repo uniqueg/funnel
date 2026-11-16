@@ -517,6 +517,9 @@ func TestAuthzDecisionServiceFailures(t *testing.T) {
 		{"500", func(p *stubPDP) { p.respond(500, `{"decision": true}`) }},
 		{"string true", func(p *stubPDP) { p.respond(200, `{"decision": "true"}`) }},
 		{"no decision", func(p *stubPDP) { p.respond(200, `{}`) }},
+		{"key case", func(p *stubPDP) { p.respond(200, `{"Decision": true}`) }},
+		{"trailing data", func(p *stubPDP) { p.respond(200, `{"decision": true} x`) }},
+		{"array", func(p *stubPDP) { p.respond(200, `[{"decision": true}]`) }},
 		{"not JSON", func(p *stubPDP) { p.respond(200, `not json`) }},
 		{"down", func(p *stubPDP) { p.Close() }},
 	} {

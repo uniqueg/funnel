@@ -39,3 +39,35 @@ func TestEventWritesRespectTaskAccess(t *testing.T) {
 		}
 	}
 }
+
+// workerOnlyTaskService admits only Basic admins to worker calls, like
+// taskservice.Service with Server.Authz set.
+type workerOnlyTaskService struct{ ownerTaskService }
+
+func (workerOnlyTaskService) AuthorizeWorkerCall(ctx context.Context) error {
+	if identity.GetUser(ctx).IsAdmin {
+		return nil
+	}
+	return status.Error(codes.PermissionDenied, "worker calls only")
+}
+
+func TestEventCallsNeedAWorkerWithAuthz(t *testing.T) {
+	interceptor := EventWriteInterceptor(workerOnlyTaskService{})
+	for _, method := range []string{events.EventService_WriteEvent_FullMethodName, events.EventService_ClaimExecution_FullMethodName} {
+		for _, user := range []*identity.UserInfo{
+			{Username: "alice", AccessMode: identity.AccessAll},
+			{Username: "worker", IsAdmin: true, AccessMode: identity.AccessAll},
+		} {
+			ctx := identity.WithUser(context.Background(), user)
+			called := false
+			var req interface{} = events.NewSystemLog("task", 0, 0, "info", "synthetic", nil)
+			if method == events.EventService_ClaimExecution_FullMethodName {
+				req = &events.ClaimExecutionRequest{TaskId: "task"}
+			}
+			_, err := interceptor(ctx, req, &grpc.UnaryServerInfo{FullMethod: method}, func(context.Context, interface{}) (interface{}, error) { called = true; return nil, nil })
+			if user.IsAdmin != (err == nil && called) {
+				t.Fatalf("%s as %s: err %v, called %v", method, user.Username, err, called)
+			}
+		}
+	}
+}

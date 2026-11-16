@@ -259,6 +259,16 @@ func (ts *Service) CreateTask(ctx context.Context, task *tes.Task) (*tes.CreateT
 	return &tes.CreateTaskResponse{Id: task.Id}, nil
 }
 
+// AuthorizeWorkerCall limits event writes and execution claims to the
+// callers the AuthZ hook exempts, so callers it rejects cannot change
+// tasks through the event service. Without the hook, TaskAccess decides.
+func (ts *Service) AuthorizeWorkerCall(ctx context.Context) error {
+	if ts.Authz.skip(ctx) {
+		return nil
+	}
+	return status.Error(codes.PermissionDenied, "event writes and execution claims need worker credentials")
+}
+
 // GetTask calls GetTask on the underlying tes.ReadOnlyServer. If the underlying server
 // returns tes.ErrNotFound, Service will handle returning the appropriate gRPC error.
 func (ts *Service) GetTask(ctx context.Context, req *tes.GetTaskRequest) (*tes.Task, error) {

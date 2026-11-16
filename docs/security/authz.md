@@ -63,9 +63,12 @@ How it works:
   e.g. with a service mesh.
 - Basic-auth administrators bypass the rule and the decision service for all
   four operations: they are the service identities of workers and
-  schedulers, whose task reads use these credentials. Event writes,
-  scheduler and execution-claim calls also keep using `TaskAccess`. Give
-  Basic admin credentials only to Funnel's own components.
+  schedulers, whose task reads use these credentials. Give Basic admin
+  credentials only to Funnel's own components.
+- With `Authz` set, event writes and execution claims (the gRPC
+  `EventService`) accept only Basic-auth administrators, so callers the
+  hook rejects cannot change tasks through it; `TaskAccess` still checks
+  the task. Scheduler calls are unchanged.
 - The claim rule and `Claims` read the access token's claims and, with
   `Server.OidcAuth.Userinfo.Enabled`, the userinfo claims too (the token's
   value wins). See [OAuth2](oauth2.md).

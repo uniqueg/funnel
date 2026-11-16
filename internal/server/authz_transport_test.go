@@ -266,11 +266,19 @@ func TestAuthzLeavesWorkerPathsAlone(t *testing.T) {
 	if code, _ := overGRPC(t, f, "worker", http.MethodGet, "/tasks/"+id, nil); code != 200 {
 		t.Fatalf("worker GetTask: %d", code)
 	}
-	// Event writes check access with TaskAccess, not the decision service.
-	ctx, cancel := context.WithTimeout(metadata.NewOutgoingContext(context.Background(), metadata.Pairs("authorization", basic("alice"))), 10*time.Second)
-	defer cancel()
-	if _, err := f.events.WriteEvent(ctx, events.NewSystemLog(id, 0, 0, "info", "marker", nil)); err != nil {
-		t.Fatalf("owner event write: %v", err)
+	// Event writes need worker credentials and never ask the decision
+	// service: the owner, whom the hook may reject, cannot write events.
+	write := func(user string) error {
+		ctx, cancel := context.WithTimeout(metadata.NewOutgoingContext(context.Background(), metadata.Pairs("authorization", basic(user))), 10*time.Second)
+		defer cancel()
+		_, err := f.events.WriteEvent(ctx, events.NewSystemLog(id, 0, 0, "info", "marker", nil))
+		return err
+	}
+	if err := write("worker"); err != nil {
+		t.Fatalf("worker event write: %v", err)
+	}
+	if err := write("alice"); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("owner event write = %v, want PermissionDenied", err)
 	}
 	if f.callCount() != 0 {
 		t.Fatalf("PDP calls on worker paths = %d, want 0", f.callCount())
