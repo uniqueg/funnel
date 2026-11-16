@@ -41,12 +41,12 @@ func (jwksTransformer) Transform(_ context.Context, res *http.Response) (jwk.Set
 
 // newJWKSCache fetches the JWKS and starts background refreshing at the given URL.
 // Callers must invoke Shutdown when done.
-func newJWKSCache(ctx context.Context, jwksURL string) (*jwksCache, error) {
-	return newJWKSCacheWithInterval(ctx, jwksURL, 15*time.Minute)
+func newJWKSCache(ctx context.Context, jwksURL string, client *http.Client) (*jwksCache, error) {
+	return newJWKSCacheWithInterval(ctx, jwksURL, 15*time.Minute, client)
 }
 
-func newJWKSCacheWithInterval(ctx context.Context, jwksURL string, minInterval time.Duration) (*jwksCache, error) {
-	ctrl, err := httprc.NewClient().Start(ctx)
+func newJWKSCacheWithInterval(ctx context.Context, jwksURL string, minInterval time.Duration, client *http.Client) (*jwksCache, error) {
+	ctrl, err := httprc.NewClient(httprc.WithHTTPClient(client)).Start(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start httprc client: %w", err)
 	}

@@ -27,6 +27,22 @@ type UserInfo struct {
 	Token string
 	// AccessMode is assigned by server authentication after validating config.
 	AccessMode AccessMode
+	// Claims of a validated OIDC access token (nil for other callers).
+	// A pointer keeps UserInfo comparable.
+	Claims *Claims
+	// Userinfo claims of an OIDC caller, if the userinfo lookup is on.
+	Userinfo *Claims
+
+	probe *ownerProbe
+}
+
+// Claims are the claims of a validated access token.
+type Claims map[string]any
+
+// ownerProbe records the owner that a backend checks access for.
+type ownerProbe struct {
+	owner string
+	seen  bool
 }
 
 type userInfoContextKey struct{}
@@ -54,6 +70,10 @@ func GetUsername(ctx context.Context) string {
 
 // IsAccessible reports whether the user can access data owned by dataOwner.
 func (u *UserInfo) IsAccessible(dataOwner string) bool {
+	if u.probe != nil {
+		u.probe.owner, u.probe.seen = dataOwner, true
+		return true
+	}
 	if *u == systemUserInfo || u.AccessMode == "" || u.AccessMode == AccessAll {
 		return true
 	}
@@ -83,4 +103,22 @@ func GetUserID(ctx context.Context) string {
 		return username
 	}
 	return "ANONYMOUS"
+}
+
+// WithOwnerProbe returns a context whose user may read any task and records
+// the owner that the backend checks; owner reports it once a read is done.
+// Every task backend checks the owner of a task it reads, so this reads a
+// task's owner without changes to the backends.
+func WithOwnerProbe(ctx context.Context) (context.Context, func() (string, bool)) {
+	probe := &ownerProbe{}
+	user := *GetUser(ctx)
+	user.AccessMode, user.probe = AccessOwner, probe
+	return WithUser(ctx, &user), func() (string, bool) { return probe.owner, probe.seen }
+}
+
+// WithAccess returns a context whose user is a copy with the given mode.
+func WithAccess(ctx context.Context, mode AccessMode) context.Context {
+	user := *GetUser(ctx)
+	user.AccessMode = mode
+	return WithUser(ctx, &user)
 }

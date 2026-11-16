@@ -51,3 +51,39 @@ func TestWithUserAndGetUser(t *testing.T) {
 		t.Fatalf("missing identity username = %q, want SYSTEM", got)
 	}
 }
+
+func TestWithOwnerProbeRecordsTheOwnerAndAllowsTheRead(t *testing.T) {
+	user := &UserInfo{Username: "alice", AccessMode: AccessOwner}
+	ctx, owner := WithOwnerProbe(WithUser(context.Background(), user))
+	if _, seen := owner(); seen {
+		t.Fatal("owner seen before any access check")
+	}
+	probe := GetUser(ctx)
+	if probe.CanSeeAllTasks() {
+		t.Fatal("a probe must make backends check the owner")
+	}
+	if !probe.IsAccessible("bob") {
+		t.Fatal("a probe must read any task")
+	}
+	if got, seen := owner(); !seen || got != "bob" {
+		t.Fatalf("owner() = %q, %v; want bob, true", got, seen)
+	}
+	if user.IsAccessible("bob") {
+		t.Fatal("the caller's identity must stay unchanged")
+	}
+}
+
+func TestWithAccessOverridesTheModeOfACopy(t *testing.T) {
+	user := &UserInfo{Username: "alice", AccessMode: AccessOwner, Claims: &Claims{"sub": "alice"}}
+	all := GetUser(WithAccess(WithUser(context.Background(), user), AccessAll))
+	if !all.IsAccessible("bob") || !all.CanSeeAllTasks() || all.Username != "alice" || (*all.Claims)["sub"] != "alice" {
+		t.Fatalf("WithAccess(All) = %+v", all)
+	}
+	own := GetUser(WithAccess(WithUser(context.Background(), all), AccessOwner))
+	if !own.IsAccessible("alice") || own.IsAccessible("bob") || own.CanSeeAllTasks() {
+		t.Fatal("WithAccess(Owner) must filter by owner")
+	}
+	if user.AccessMode != AccessOwner {
+		t.Fatal("the original identity must stay unchanged")
+	}
+}

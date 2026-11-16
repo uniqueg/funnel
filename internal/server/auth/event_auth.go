@@ -6,6 +6,7 @@ import (
 	"github.com/calypr/funnel/api/tes"
 	"github.com/calypr/funnel/internal/events"
 	"github.com/calypr/funnel/internal/identity"
+	"github.com/calypr/funnel/internal/server/taskservice"
 	"github.com/calypr/funnel/internal/tesrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -28,7 +29,9 @@ func EventWriteInterceptor(tasks tesrpc.TaskServiceServer) grpc.UnaryServerInter
 				return nil, status.Error(codes.PermissionDenied, "create tasks through the TES task API")
 			}
 		} else {
-			_, err := tasks.GetTask(ctx, &tes.GetTaskRequest{Id: event.Id, View: tes.View_MINIMAL.String()})
+			// A worker path: TaskAccess decides, not the TES AuthZ hook.
+			internal := context.WithValue(ctx, taskservice.InternalCallKey, true)
+			_, err := tasks.GetTask(internal, &tes.GetTaskRequest{Id: event.Id, View: tes.View_MINIMAL.String()})
 			if err != nil {
 				return nil, err
 			}

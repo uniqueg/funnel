@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -54,7 +55,7 @@ func TestParseJwtSubjectValidatesOIDCTokens(t *testing.T) {
 	t.Cleanup(func() { http.DefaultTransport = previous })
 
 	ctx := context.Background()
-	cache, err := newJWKSCacheWithInterval(ctx, jwksURL, time.Hour)
+	cache, err := newJWKSCacheWithInterval(ctx, jwksURL, time.Hour, &http.Client{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,6 +113,15 @@ func TestParseJwtSubjectValidatesOIDCTokens(t *testing.T) {
 			}
 		})
 	}
+	withGroups := withOIDCClaim(validClaims, "groups", []string{"g1"})
+	user := c.Authorize("Bearer " + signOIDCTestToken(t, key, withGroups))
+	if user == nil || user.Username != "alice" || user.Claims == nil {
+		t.Fatalf("Authorize() = %+v, want alice with claims", user)
+	}
+	if claims := *user.Claims; claims["iss"] != "https://issuer.example" || fmt.Sprint(claims["groups"]) != "[g1]" {
+		t.Fatalf("Authorize() claims = %v, want the validated token's claims", claims)
+	}
+
 	c.local.RequireAudience = ""
 	if got := c.ParseJwtSubject(signOIDCTestToken(t, key, validClaims)); got != "" {
 		t.Error("accepted token without a configured API audience")

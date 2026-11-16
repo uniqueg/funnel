@@ -1,9 +1,11 @@
 package auth
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -28,6 +30,7 @@ type OidcRemoteConfig struct {
 	AuthorizationEndpoint string `json:"authorization_endpoint"`
 	IntrospectionEndpoint string `json:"introspection_endpoint"`
 	TokenEndpoint         string `json:"token_endpoint"`
+	UserinfoEndpoint      string `json:"userinfo_endpoint"`
 }
 
 // JSON structure of the OIDC token introspection response (only some fields)
@@ -42,6 +45,10 @@ type OidcConfig struct {
 	remote OidcRemoteConfig
 	oauth2 *oauth2.Config
 	jwks   *jwksCache
+	// client bounds discovery, JWKS and userinfo calls (OidcAuth.Timeout).
+	client *http.Client
+	// userinfo caches userinfo answers; nil when the lookup is off.
+	userinfo *userinfoCache
 }
 
 func initOidcConfig(config *config.OidcAuth) *OidcConfig {
@@ -71,8 +78,12 @@ func initOidcConfig(config *config.OidcAuth) *OidcConfig {
 
 func (c *OidcConfig) initConfig() {
 	c.remote = OidcRemoteConfig{}
+	c.client = &http.Client{Timeout: 10 * time.Second}
+	if c.local.Timeout != nil {
+		c.client.Timeout = c.local.Timeout.AsDuration()
+	}
 	parsedUrl := validateUrl(c.local.ServiceConfigURL)
-	err := json.Unmarshal(fetchJson(parsedUrl), &c.remote)
+	err := json.Unmarshal(fetchJson(c.client, parsedUrl), &c.remote)
 	if err != nil {
 		fmt.Printf("[ERROR] Failed to parse the configuration (JSON) of the "+
 			"OIDC service: %s\n", err)
@@ -80,6 +91,14 @@ func (c *OidcConfig) initConfig() {
 	}
 
 	c.initJwks()
+	if c.local.GetUserinfo().GetEnabled() {
+		if c.remote.UserinfoEndpoint == "" {
+			fmt.Printf("[ERROR] Server.OidcAuth.Userinfo is enabled, but the OIDC " +
+				"service configuration has no userinfo_endpoint\n")
+			os.Exit(1)
+		}
+		c.userinfo = newUserinfoCache(userinfoCacheSize)
+	}
 
 	c.oauth2 = &oauth2.Config{ClientID: c.local.ClientId}
 	c.oauth2.ClientSecret = c.local.ClientSecret
@@ -103,7 +122,7 @@ func (c *OidcConfig) initJwks() {
 	jwksUrl := c.remote.JwksURI
 	ctx := context.Background()
 
-	cache, err := newJWKSCache(ctx, jwksUrl)
+	cache, err := newJWKSCache(ctx, jwksUrl, c.client)
 	if err != nil {
 		fmt.Printf("[ERROR] Failed to create JWKS cache for the OIDC service (%s): %s\n",
 			c.local.ServiceConfigURL, err)
@@ -212,20 +231,34 @@ func oidcStateCookieName(req *http.Request) string {
 
 func (c *OidcConfig) Authorize(authorization string) *identity.UserInfo {
 	jwtString := strings.TrimPrefix(authorization, "Bearer ")
-	subject := c.ParseJwtSubject(jwtString)
+	subject, claims := c.parseJwt(jwtString)
 	isAdmin := c.admins[subject]
 
 	if subject == "" {
 		return nil
 	}
-	return &identity.UserInfo{Username: subject, Token: jwtString, IsAdmin: isAdmin}
+	user := &identity.UserInfo{Username: subject, Token: jwtString, IsAdmin: isAdmin, Claims: &claims}
+	if c.userinfo != nil {
+		userinfo, ok := c.lookupUserinfo(jwtString, subject, claims)
+		if !ok {
+			return nil
+		}
+		user.Userinfo = &userinfo
+	}
+	return user
 }
 
 func (c *OidcConfig) ParseJwtSubject(jwtString string) string {
+	subject, _ := c.parseJwt(jwtString)
+	return subject
+}
+
+// parseJwt validates the token and returns its subject and claims, or "".
+func (c *OidcConfig) parseJwt(jwtString string) (string, identity.Claims) {
 	keySet, err := c.jwks.Fetch(context.Background(), c.remote.JwksURI)
 	if err != nil {
 		fmt.Printf("[WARN] Failed to retrieve JWKS key-set: %s", err)
-		return ""
+		return "", nil
 	}
 
 	token, err := jwt.Parse(
@@ -238,15 +271,23 @@ func (c *OidcConfig) ParseJwtSubject(jwtString string) string {
 
 	if err != nil {
 		fmt.Printf("[WARN] Provided JWT is not valid: %s.\n", err)
-		return ""
+		return "", nil
 	}
 
 	if !c.isJwtValid(&token) || !c.isJwtActive(jwtString) {
-		return ""
+		return "", nil
 	}
 
+	// The signature is verified, so the payload holds the claims as issued.
+	var claims identity.Claims
+	payload, err := base64.RawURLEncoding.DecodeString(strings.Split(jwtString, ".")[1])
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.UseNumber()
+	if err != nil || decoder.Decode(&claims) != nil {
+		return "", nil
+	}
 	subject, _ := token.Subject()
-	return subject
+	return subject, claims
 }
 
 func (c *OidcConfig) isJwtValid(token *jwt.Token) bool {
@@ -401,8 +442,8 @@ func validateUrl(providedUrl string) *url.URL {
 	return parsedUrl
 }
 
-func fetchJson(url *url.URL) []byte {
-	res, err := http.Get(url.String())
+func fetchJson(client *http.Client, url *url.URL) []byte {
+	res, err := client.Get(url.String())
 
 	if err != nil {
 		fmt.Printf("[ERROR] OIDC service configuration (%s) could not be "+
