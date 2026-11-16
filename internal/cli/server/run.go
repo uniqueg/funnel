@@ -305,6 +305,10 @@ func NewServer(ctx context.Context, conf *config.Config, log *logger.Logger) (se
 		go metrics.WatchNodes(lifetimeCtx, nodes)
 	}
 
+	authz, authzErr := taskservice.NewAuthz(conf.Server, log)
+	if authzErr != nil {
+		return nil, authzErr
+	}
 	tasks := &taskservice.Service{
 		Name:    conf.Server.ServiceName,
 		Event:   writer,
@@ -312,6 +316,7 @@ func NewServer(ctx context.Context, conf *config.Config, log *logger.Logger) (se
 		Read:    reader,
 		Log:     log,
 		Config:  conf,
+		Authz:   authz,
 	}
 	defer func() {
 		if returnErr != nil {

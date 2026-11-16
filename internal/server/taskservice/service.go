@@ -50,6 +50,8 @@ type Service struct {
 	Config        *config.Config
 	Plugin        proto.Authorize
 	PluginManager *pluginmanager.Manager
+	// Authz is the TES AuthZ hook (nil: off).
+	Authz *Authz
 
 	// submitWG tracks in-flight compute backend submissions started by
 	// CreateTask; Close waits for them so a server shutdown can't strand
@@ -109,6 +111,9 @@ type contextKey string
 
 const InternalCallKey contextKey = "internalCall"
 
+// serviceID is the service-info id, also sent to the decision service.
+const serviceID = "org.ga4gh.funnel"
+
 // LoadPlugins loads plugins for a task.
 func (ts *Service) DoPluginAction(ctx context.Context, task *tes.Task, taskType proto.Type) (*proto.JobResponse, error) {
 	header := map[string]*proto.StringList{}
@@ -151,6 +156,9 @@ func (ts *Service) HandleDoPluginAction(ctx context.Context, task *tes.Task, tas
 // CreateTask provides an HTTP/gRPC endpoint for creating a task.
 // This is part of the TES implementation.
 func (ts *Service) CreateTask(ctx context.Context, task *tes.Task) (*tes.CreateTaskResponse, error) {
+	if _, err := ts.Authz.authorizeCreate(ctx, task); err != nil {
+		return nil, err
+	}
 	if ts.Config.Plugins != nil {
 		pluginResponse, err := ts.HandleDoPluginAction(ctx, task, proto.Type_CREATE)
 		if err != nil {
@@ -281,6 +289,9 @@ func (ts *Service) GetTask(ctx context.Context, req *tes.GetTaskRequest) (*tes.T
 		req = googleproto.Clone(req).(*tes.GetTaskRequest)
 		req.View = view
 	}
+	if ctx, err = ts.Authz.authorizeTask(ctx, ts.Read, "GetTask", req.Id, view); err != nil {
+		return nil, err
+	}
 	task, err := ts.Read.GetTask(ctx, req)
 	if err == taskpolicy.ErrNotFound {
 		err = status.Errorf(codes.NotFound, "%v: taskID: %s", err.Error(), req.Id)
@@ -303,6 +314,9 @@ func (ts *Service) ListTasks(ctx context.Context, req *tes.ListTasksRequest) (*t
 		req = googleproto.Clone(req).(*tes.ListTasksRequest)
 		req.View = view
 	}
+	if ctx, err = ts.Authz.authorizeList(ctx, view); err != nil {
+		return nil, err
+	}
 	limit := ts.responseBytes()
 	if limit <= 0 {
 		return nil, status.Error(codes.Internal, "Server.MaxResponseBytes is too small")
@@ -314,6 +328,10 @@ func (ts *Service) ListTasks(ctx context.Context, req *tes.ListTasksRequest) (*t
 // CancelTask cancels a task
 func (ts *Service) CancelTask(ctx context.Context, req *tes.CancelTaskRequest) (*tes.CancelTaskResponse, error) {
 	result := &tes.CancelTaskResponse{}
+	ctx, err := ts.Authz.authorizeTask(ctx, ts.Read, "CancelTask", req.Id, "")
+	if err != nil {
+		return nil, err
+	}
 	if ts.Config.Plugins != nil {
 		pluginResponse, err := ts.HandleDoPluginAction(ctx, nil, proto.Type_CANCEL)
 		if err != nil {
@@ -390,7 +408,7 @@ func (ts *Service) GetServiceInfo(ctx context.Context, info *tes.GetServiceInfoR
 		Description:      "Funnel is a toolkit for distributed task execution via a simple, standard API.",
 		DocumentationUrl: "https://github.com/calypr/funnel",
 		Environment:      "development",
-		Id:               "org.ga4gh.funnel",
+		Id:               serviceID,
 		Name:             ts.Name,
 		Organization: map[string]string{
 			"name": "CALYPR Data Platform",
