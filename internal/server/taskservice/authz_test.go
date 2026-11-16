@@ -625,6 +625,35 @@ func TestAuthzSkipsWorkerPaths(t *testing.T) {
 	}
 }
 
+func TestAuthzWorkerCallsOnlyForBasicAdmins(t *testing.T) {
+	pdp := newStubPDP(t)
+	ts := newAuthzService(t, "boltdb", withPDP(pdp, &config.AuthzDecisionService{}))
+	oidcAdmin := as("admin", map[string]any{"eduperson_entitlement": subgroup}, identity.AccessAll)
+	identity.GetUser(oidcAdmin).IsAdmin = true
+	public := identity.WithUser(context.Background(), &identity.UserInfo{Username: "anonymous", IsAdmin: true, IsPublic: true, AccessMode: identity.AccessAll})
+	for _, tt := range []struct {
+		name string
+		ctx  context.Context
+		want codes.Code
+	}{
+		{"Basic admin", identity.WithUser(context.Background(), &identity.UserInfo{Username: "worker", IsAdmin: true, AccessMode: identity.AccessAll}), codes.OK},
+		{"OIDC admin", oidcAdmin, codes.PermissionDenied},
+		{"OIDC user", as("alice-sub", nil, identity.AccessAll), codes.PermissionDenied},
+		{"public", public, codes.PermissionDenied},
+	} {
+		if got := code(ts.AuthorizeWorkerCall(tt.ctx)); got != tt.want {
+			t.Errorf("%s: %v, want %v", tt.name, got, tt.want)
+		}
+	}
+	ts.Authz = nil
+	if err := ts.AuthorizeWorkerCall(as("alice-sub", nil, identity.AccessAll)); err != nil {
+		t.Errorf("without the hook: %v, want TaskAccess to decide", err)
+	}
+	if got := len(pdp.take()); got != 0 {
+		t.Fatalf("PDP calls = %d, want 0", got)
+	}
+}
+
 func TestAuthzStartupChecks(t *testing.T) {
 	// Case 23 and the fail-safe checks of spec section 4.2.
 	dir := t.TempDir()

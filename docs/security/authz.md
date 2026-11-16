@@ -53,7 +53,8 @@ How it works:
   tasks if the set `all` is allowed, else only the caller's tasks if `own`
   is allowed.
 - Any failure of the decision service (timeout, connection error, non-200
-  status, a body without a boolean `decision`) gives 503 and is not retried.
+  status, a body that is not exactly one JSON object with a boolean
+  `decision`) gives 503 and is not retried.
   The decision service and OIDC timeouts must be positive.
 - Funnel refuses to start if `Authz` is set without `BasicAuth` or
   `OidcAuth`, if `RequiredClaim` has no `Name` or no values and prefixes, or
@@ -69,6 +70,10 @@ How it works:
   `EventService`) accept only Basic-auth administrators, so callers the
   hook rejects cannot change tasks through it; `TaskAccess` still checks
   the task. Scheduler calls are unchanged.
+- Known limitation: the scheduler's `ListNodes` and `GetNode` stay open to
+  every authenticated caller, and a node lists the IDs of the tasks it
+  runs, so users the hook rejects can still see those task IDs (not the
+  tasks).
 - The claim rule and `Claims` read the access token's claims and, with
   `Server.OidcAuth.Userinfo.Enabled`, the userinfo claims too (the token's
   value wins). See [OAuth2](oauth2.md).

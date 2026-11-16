@@ -314,7 +314,8 @@ func (a *Authz) authorizeTask(ctx context.Context, read taskpolicy.ReadOnlyServe
 }
 
 // authorizeList asks for the task sets "all" and "own" and returns a
-// context that lists all tasks or only the caller's.
+// context that lists all tasks or only the caller's. It asks both sets
+// every time (spec section 6), so both decisions are logged.
 func (a *Authz) authorizeList(ctx context.Context, view string) (context.Context, error) {
 	if decide, err := a.admit(ctx); !decide {
 		return ctx, err
