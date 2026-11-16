@@ -429,16 +429,6 @@ func stripURL(u string) (string, bool) {
 	if strings.ContainsRune(w, '\\') || end >= 0 && strings.LastIndexByte(w, '@') > end {
 		return "", false
 	}
-	// Step 2c: WHATWG skips extra slashes, so "https:///u:p@h/p" sends u:p.
-	if w == "" {
-		head := rest
-		if cut := strings.IndexAny(rest, "?#"); cut >= 0 {
-			head = rest[:cut]
-		}
-		if strings.ContainsRune(head, '@') {
-			return "", false
-		}
-	}
 	if end < 0 {
 		end = len(w)
 	}
@@ -446,6 +436,10 @@ func stripURL(u string) (string, bool) {
 	path := rest[end:]
 	if cut := strings.IndexAny(path, "?#"); cut >= 0 {
 		path = path[:cut]
+	}
+	// Step 4b: WHATWG skips extra slashes, so "https:///u:p@h/p" sends u:p.
+	if authority == "" && strings.ContainsRune(path, '@') {
+		return "", false
 	}
 	return u[:scheme] + authority + path, true
 }
