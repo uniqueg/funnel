@@ -42,6 +42,16 @@ Server:
       - user.one@example.org
       - user.two@example.org
 
+    # Optional: bound for discovery, JWKS and userinfo calls (default 10s).
+    Timeout: 10s
+
+    # Optional: look up userinfo for every token (cached per token for at
+    # most 5 minutes). Its claims join the token's for Server.Authz (see
+    # authz.md). A failing lookup, a userinfo `sub` that differs from the
+    # token's, or a signed (application/jwt) answer rejects the token (401).
+    Userinfo:
+      Enabled: false
+
   TaskAccess: OwnerOrAdmin
 ```
 
@@ -56,6 +66,9 @@ As new tasks are created, the username behind the request is recorded as the
 owner of the task. Depending on the `TaskAccess` property, if owner-based
 acces-mode is enabled, the owner of the task is compared to username of current
 request to decide if the user may see and interact with the task.
+
+To admit users by a token claim, or to let an external decision service
+decide instead of `TaskAccess`, see [External authorization](authz.md).
 
 Make sure to properly protect the configuration file so that it's not readable
 by everyone:
